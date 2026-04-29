@@ -8,21 +8,17 @@ RUN wget -q https://mirrors.ocf.berkeley.edu/blender/release/Blender3.6/blender-
 
 WORKDIR /app
 
-# PyTorch CPU
 RUN pip install --no-cache-dir     torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cpu
 
-# Clone TripoSR — do NOT use requirements.txt (contains unpinned gradio → pip timeout)
 RUN git clone --depth 1 https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR
 
-# Install only the packages reconstruct.py actually needs (no gradio, no demo deps)
-RUN pip install --no-cache-dir     "omegaconf>=2.3"     "einops>=0.7"     "transformers>=4.35"     "huggingface-hub>=0.20"     "trimesh[easy]>=4.0"     "rembg>=2.0"     "Pillow>=10.0"     "numpy>=1.24,<2.0"     "scipy>=1.11"     "skimage"     scikit-image
+RUN pip install --no-cache-dir     "omegaconf>=2.3"     "einops>=0.7"     "transformers>=4.35"     "huggingface-hub>=0.20"     "trimesh[easy]>=4.0"     "rembg>=2.0"     "Pillow>=10.0"     "numpy>=1.24,<2.0"     "scipy>=1.11"     scikit-image
 
 ENV PYTHONPATH="/opt/TripoSR"
 
 COPY package.json ./
 RUN npm install
 
-# Pre-cache model weights
 RUN python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download('stabilityai/TripoSR', 'model.ckpt'); hf_hub_download('stabilityai/TripoSR', 'config.yaml'); print('weights cached')" || echo "pre-cache skipped"
 
 COPY . .
