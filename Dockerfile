@@ -2,6 +2,7 @@ FROM python:3.10-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl wget xz-utils ca-certificates git \
+    build-essential python3-dev \
     libgl1 libglib2.0-0 libgomp1 \
     libxi6 libxrender1 libxfixes3 \
     libsm6 libxext6 xvfb \
@@ -34,7 +35,8 @@ RUN pip install --no-cache-dir \
     "Pillow>=10.0" \
     "numpy>=1.24,<2.0" \
     "scipy==1.13.1" \
-    scikit-image
+    scikit-image \
+    torchmcubes
 
 ENV PYTHONPATH="/opt/TripoSR"
 
