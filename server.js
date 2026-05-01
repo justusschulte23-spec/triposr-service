@@ -45,7 +45,7 @@ function downloadFile(url, dest) {
         }
         if (res.statusCode !== 200) {
           res.resume()
-          reject(new Error('HTTP ' + res.statusCode + ': ' + url))
+          reject(new Error('HTTP ' + res.statusCode + ' from ' + parsed.hostname))
           return
         }
         const file = fs.createWriteStream(dest)
@@ -61,8 +61,13 @@ function downloadFile(url, dest) {
 }
 
 async function tryDownloadFile(url, dest, label) {
-  try { await downloadFile(url, dest); return dest }
-  catch (e) { console.warn('[download] skipping ' + label + ': ' + e.message); return null }
+  try {
+    await downloadFile(url, dest)
+    return { path: dest, error: null }
+  } catch (e) {
+    console.warn('[download] skipping ' + label + ': ' + e.message)
+    return { path: null, error: e.message }
+  }
 }
 
 async function uploadToCloudinary(filePath, folder, resourceType) {
@@ -86,7 +91,26 @@ app.get('/health', (_, res) => res.json({
   status: 'ok',
   service: 'triposr-service',
   scraper_proxy: !!(process.env.SCRAPERAPI_KEY && process.env.SCRAPERAPI_KEY !== 'PLACEHOLDER_ENTER_KEY'),
+  scraperapi_key_prefix: (process.env.SCRAPERAPI_KEY || '').slice(0, 6) || 'not set',
 }))
+
+// Debug endpoint: test downloading a single URL and report exact error
+app.post('/test-download', async (req, res) => {
+  const { url } = req.body || {}
+  if (!url) return res.status(400).json({ error: 'url required' })
+  const proxied = proxyUrl(url)
+  const dest = '/tmp/triposr_test_' + Date.now() + '.jpg'
+  fs.mkdirSync('/tmp', { recursive: true })
+  try {
+    await downloadFile(url, dest)
+    const size = fs.statSync(dest).size
+    fs.unlink(dest, () => {})
+    res.json({ ok: true, url, proxied_host: new URL(proxied).hostname, bytes: size })
+  } catch (e) {
+    try { fs.unlink(dest, () => {}) } catch {}
+    res.json({ ok: false, url, proxied_host: new URL(proxied).hostname, error: e.message })
+  }
+})
 
 app.post('/reconstruct', async (req, res) => {
   res.setTimeout(900000)
@@ -110,9 +134,10 @@ app.post('/reconstruct', async (req, res) => {
         return tryDownloadFile(url, dest, 'image_' + i)
       })
     )
-    const imagePaths = results.filter(Boolean)
+    const imagePaths = results.filter(r => r.path).map(r => r.path)
+    const errors     = results.filter(r => r.error).map(r => r.error)
     if (imagePaths.length === 0)
-      return res.status(400).json({ error: 'all_downloads_failed', detail: 'Check SCRAPERAPI_KEY env var or image URLs' })
+      return res.status(400).json({ error: 'all_downloads_failed', errors, detail: 'Check SCRAPERAPI_KEY env var or image URLs' })
     console.log('[' + jobId + '] ' + imagePaths.length + ' images ready')
 
     const glbPath = path.join(outputDir, 'model.glb')
