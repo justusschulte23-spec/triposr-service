@@ -40,11 +40,17 @@ RUN pip install --no-cache-dir \
 
 RUN pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git
 
+# Pre-download rembg u2net model (176 MB) so it's baked into the image
+RUN mkdir -p /root/.u2net && \
+    wget -q -O /root/.u2net/u2net.onnx \
+    https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx
+
 ENV PYTHONPATH="/opt/TripoSR"
 
 COPY package.json ./
 RUN npm install
 
+# Pre-download TripoSR weights
 RUN python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download('stabilityai/TripoSR', 'model.ckpt'); hf_hub_download('stabilityai/TripoSR', 'config.yaml'); print('weights cached')" || echo "pre-cache skipped"
 
 # Smoke-test: fail the build now if any TripoSR import is missing
