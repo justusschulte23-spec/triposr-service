@@ -2,6 +2,7 @@
 
 import sys
 import os
+import gc
 import torch
 from PIL import Image
 
@@ -13,14 +14,22 @@ def main():
     input_path = sys.argv[1]
     output_path = sys.argv[2]
 
-    print(f"[TripoSR] Loading model...")
+    # Step 1: background removal BEFORE loading TripoSR to reduce peak RAM
+    print("[TripoSR] Step 1: background removal...")
+    image = Image.open(input_path).convert("RGBA")
+    alpha_min, alpha_max = image.split()[3].getextrema()
+    if alpha_max == 255 and alpha_min == 255:
+        from rembg import remove as rembg_remove
+        image = rembg_remove(image)
+        gc.collect()
 
-    # Lazy import after pip install
+    # Step 2: load model
+    print("[TripoSR] Step 2: loading model...")
     from tsr.system import TSR
-    from tsr.utils import remove_background, resize_foreground
+    from tsr.utils import resize_foreground
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"[TripoSR] Device: {device}")
+    print(f"[TripoSR] device: {device}")
 
     model = TSR.from_pretrained(
         "stabilityai/TripoSR",
@@ -30,25 +39,20 @@ def main():
     model = model.to(device)
     model.eval()
 
-    print(f"[TripoSR] Processing image: {input_path}")
-    image = Image.open(input_path).convert("RGBA")
-
-    # Remove background if no alpha
-    if image.mode != "RGBA" or image.split()[3].getextrema() == (255, 255):
-        image = remove_background(image)
     image = resize_foreground(image, 0.85)
 
+    print("[TripoSR] Step 3: inference...")
     with torch.no_grad():
         scene_codes = model([image], device=device)
 
-    print(f"[TripoSR] Extracting mesh...")
-    meshes = model.extract_mesh(scene_codes, resolution=192)
+    # resolution=64 uses ~8x less RAM than 192 on CPU (64^3 vs 192^3 voxels)
+    print("[TripoSR] Step 4: mesh extraction (resolution=64)...")
+    meshes = model.extract_mesh(scene_codes, resolution=64)
 
     mesh = meshes[0]
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     mesh.export(output_path)
-
-    print(f"[TripoSR] Saved GLB: {output_path} ({os.path.getsize(output_path)} bytes)")
+    print(f"[TripoSR] saved: {output_path} ({os.path.getsize(output_path)} bytes)")
 
 if __name__ == "__main__":
     main()
