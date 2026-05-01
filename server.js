@@ -12,22 +12,41 @@ app.use(express.json({ limit: '10mb' }))
 
 const TMP = '/tmp/triposr'
 
+const DOWNLOAD_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 async function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const proto = url.startsWith('https') ? https : http
     const file = fs.createWriteStream(dest)
-    proto.get(url, res => {
+    const reqOpts = Object.assign(new URL(url), { headers: DOWNLOAD_HEADERS })
+    proto.get(reqOpts, res => {
       if (res.statusCode !== 200) {
+        file.close()
+        fs.unlink(dest, () => {})
         reject(new Error(`HTTP ${res.statusCode}: ${url}`))
         return
       }
       res.pipe(file)
       file.on('finish', () => file.close(resolve))
-      file.on('error', reject)
-    }).on('error', reject)
+      file.on('error', err => { file.close(); fs.unlink(dest, () => {}); reject(err) })
+    }).on('error', err => { file.close(); fs.unlink(dest, () => {}); reject(err) })
   })
+}
+
+// Returns dest path on success, null on failure — never throws
+async function tryDownloadFile(url, dest, label) {
+  try {
+    await downloadFile(url, dest)
+    return dest
+  } catch (e) {
+    console.warn(`[download] skipping ${label}: ${e.message}`)
+    return null
+  }
 }
 
 async function uploadToCloudinary(filePath, folder, resourceType = 'raw') {
@@ -56,7 +75,7 @@ async function uploadToCloudinary(filePath, folder, resourceType = 'raw') {
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'triposr-service' }))
 
 app.post('/reconstruct', async (req, res) => {
-  res.setTimeout(900000) // 15 min timeout
+  res.setTimeout(900000)
 
   const { image_urls } = req.body || {}
   if (!Array.isArray(image_urls) || image_urls.length === 0) {
@@ -72,20 +91,24 @@ app.post('/reconstruct', async (req, res) => {
   fs.mkdirSync(outputDir, { recursive: true })
 
   try {
-    // 1) Download all input images
-    console.log(`[${jobId}] Downloading ${image_urls.length} images...`)
-    const imagePaths = await Promise.all(
+    // 1) Download images — skip failures, continue with whatever succeeds
+    console.log(`[${jobId}] Downloading up to ${Math.min(image_urls.length, 3)} images...`)
+    const downloadResults = await Promise.all(
       image_urls.slice(0, 3).map(async (url, i) => {
-        const ext = url.split('?')[0].split('.').pop() || 'jpg'
+        const ext = url.split('?')[0].split('.').pop().replace(/[^a-z0-9]/gi, '') || 'jpg'
         const dest = path.join(inputDir, `input_${i}.${ext}`)
-        await downloadFile(url, dest)
-        return dest
+        return tryDownloadFile(url, dest, `image_${i}`)
       })
     )
-    console.log(`[${jobId}] Images ready: ${imagePaths.length}`)
+    const imagePaths = downloadResults.filter(Boolean)
 
-    // 2) Run TripoSR Python script (uses first image as primary)
-    console.log(`[${jobId}] Running TripoSR reconstruction...`)
+    if (imagePaths.length === 0) {
+      return res.status(400).json({ error: 'all_downloads_failed', detail: 'No images could be downloaded' })
+    }
+    console.log(`[${jobId}] ${imagePaths.length}/${Math.min(image_urls.length, 3)} images ready`)
+
+    // 2) TripoSR reconstruction (uses first successful image)
+    console.log(`[${jobId}] Running TripoSR...`)
     const glbPath = path.join(outputDir, 'model.glb')
 
     const { stdout: tsrOut, stderr: tsrErr } = await execFileP(
@@ -99,12 +122,12 @@ app.post('/reconstruct', async (req, res) => {
     if (!fs.existsSync(glbPath)) {
       throw new Error('TripoSR did not produce model.glb')
     }
-    console.log(`[${jobId}] GLB created: ${fs.statSync(glbPath).size} bytes`)
+    console.log(`[${jobId}] GLB: ${fs.statSync(glbPath).size} bytes`)
 
-    // 3) Blender headless: render front + side view
-    console.log(`[${jobId}] Running Blender renders...`)
+    // 3) Blender renders
+    console.log(`[${jobId}] Blender renders...`)
     const frontPng = path.join(outputDir, 'front.png')
-    const sidePng = path.join(outputDir, 'side.png')
+    const sidePng  = path.join(outputDir, 'side.png')
 
     const { stdout: blOut, stderr: blErr } = await execFileP(
       'blender',
@@ -115,7 +138,7 @@ app.post('/reconstruct', async (req, res) => {
     if (blErr) console.error(`[blender stderr] ${blErr.slice(0, 500)}`)
 
     // 4) Upload to Cloudinary
-    console.log(`[${jobId}] Uploading to Cloudinary...`)
+    console.log(`[${jobId}] Uploading...`)
     const [glbUrl, frontUrl, sideUrl] = await Promise.all([
       uploadToCloudinary(glbPath, '3d_models', 'raw'),
       fs.existsSync(frontPng) ? uploadToCloudinary(frontPng, '3d_renders', 'image') : Promise.resolve(null),
@@ -135,7 +158,6 @@ app.post('/reconstruct', async (req, res) => {
       res.status(500).json({ error: 'reconstruction_failed', detail: err.message })
     }
   } finally {
-    // Cleanup
     try { fs.rmSync(jobDir, { recursive: true, force: true }) } catch {}
   }
 })
