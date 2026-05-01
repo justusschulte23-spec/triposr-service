@@ -35,8 +35,9 @@ RUN pip install --no-cache-dir \
     "Pillow>=10.0" \
     "numpy>=1.24,<2.0" \
     "scipy==1.13.1" \
-    scikit-image \
-    torchmcubes
+    scikit-image
+
+RUN pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git
 
 ENV PYTHONPATH="/opt/TripoSR"
 
