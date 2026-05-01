@@ -28,7 +28,7 @@ RUN git clone --depth 1 https://github.com/VAST-AI-Research/TripoSR.git /opt/Tri
 RUN pip install --no-cache-dir \
     "omegaconf>=2.3" \
     "einops>=0.7" \
-    "transformers>=4.35" \
+    "transformers==4.46.3" \
     "huggingface-hub>=0.20" \
     "trimesh[easy]>=4.0" \
     "rembg>=2.0" \
@@ -46,6 +46,9 @@ COPY package.json ./
 RUN npm install
 
 RUN python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download('stabilityai/TripoSR', 'model.ckpt'); hf_hub_download('stabilityai/TripoSR', 'config.yaml'); print('weights cached')" || echo "pre-cache skipped"
+
+# Smoke-test: fail the build now if any TripoSR import is missing
+RUN PYTHONPATH="/opt/TripoSR" python3 -c "from tsr.system import TSR; print('TripoSR import OK')"
 
 COPY . .
 EXPOSE 3001
