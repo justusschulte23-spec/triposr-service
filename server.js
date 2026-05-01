@@ -94,7 +94,6 @@ app.get('/health', (_, res) => res.json({
   scraperapi_key_prefix: (process.env.SCRAPERAPI_KEY || '').slice(0, 6) || 'not set',
 }))
 
-// Debug endpoint: test downloading a single URL and report exact error
 app.post('/test-download', async (req, res) => {
   const { url } = req.body || {}
   if (!url) return res.status(400).json({ error: 'url required' })
@@ -142,10 +141,26 @@ app.post('/reconstruct', async (req, res) => {
 
     const glbPath = path.join(outputDir, 'model.glb')
     console.log('[' + jobId + '] Running TripoSR...')
-    const { stdout: tsrOut, stderr: tsrErr } = await execFileP(
-      'python3', ['reconstruct.py', imagePaths[0], glbPath],
-      { timeout: 600000, maxBuffer: 50 * 1024 * 1024 }
-    )
+
+    let tsrOut = '', tsrErr = ''
+    try {
+      // -u = unbuffered stdout/stderr so output isn't lost on OOM kill
+      const result = await execFileP(
+        'python3', ['-u', 'reconstruct.py', imagePaths[0], glbPath],
+        { timeout: 600000, maxBuffer: 50 * 1024 * 1024 }
+      )
+      tsrOut = result.stdout
+      tsrErr = result.stderr
+    } catch (e) {
+      tsrOut = e.stdout || ''
+      tsrErr = e.stderr || ''
+      const exitInfo = 'exit_code=' + e.code + ' signal=' + e.signal
+      console.error('[tsr] FAILED ' + exitInfo)
+      console.error('[tsr] stdout: ' + tsrOut.slice(0, 1000))
+      console.error('[tsr] stderr: ' + tsrErr.slice(0, 1000))
+      throw new Error('TripoSR failed (' + exitInfo + ')\nstdout: ' + tsrOut.slice(0, 500) + '\nstderr: ' + tsrErr.slice(0, 500))
+    }
+
     if (tsrOut) console.log('[tsr] ' + tsrOut.slice(0, 500))
     if (tsrErr) console.error('[tsr] ' + tsrErr.slice(0, 500))
     if (!fs.existsSync(glbPath)) throw new Error('TripoSR did not produce model.glb')
@@ -169,7 +184,7 @@ app.post('/reconstruct', async (req, res) => {
     res.json({ glb_url: glbUrl, renders: [frontUrl, sideUrl].filter(Boolean), job_id: jobId })
 
   } catch (err) {
-    console.error('[' + jobId + '] Error:', err.message)
+    console.error('[' + jobId + '] Error:', err.message.slice(0, 300))
     if (!res.headersSent) res.status(500).json({ error: 'reconstruction_failed', detail: err.message })
   } finally {
     try { fs.rmSync(jobDir, { recursive: true, force: true }) } catch {}
