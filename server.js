@@ -12,7 +12,6 @@ app.use(express.json({ limit: '10mb' }))
 
 const TMP = '/tmp/triposr'
 
-// Route download through ScraperAPI if key present, else direct
 function proxyUrl(originalUrl) {
   const key = process.env.SCRAPERAPI_KEY
   if (key && key !== 'PLACEHOLDER_ENTER_KEY') {
@@ -21,27 +20,43 @@ function proxyUrl(originalUrl) {
   return originalUrl
 }
 
-async function downloadFile(url, dest) {
+function downloadFile(url, dest) {
   const fetchUrl = proxyUrl(url)
   return new Promise((resolve, reject) => {
-    const proto = fetchUrl.startsWith('https') ? https : http
-    const reqOpts = Object.assign(new URL(fetchUrl), {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-      },
-    })
-    const file = fs.createWriteStream(dest)
-    proto.get(reqOpts, res => {
-      if (res.statusCode !== 200) {
-        file.close(); fs.unlink(dest, () => {})
-        reject(new Error('HTTP ' + res.statusCode + ': ' + url))
-        return
+    function doGet(currentUrl, redirectsLeft) {
+      const proto  = currentUrl.startsWith('https') ? https : http
+      const parsed = new URL(currentUrl)
+      const opts = {
+        hostname: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        path: parsed.pathname + parsed.search,
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        },
       }
-      res.pipe(file)
-      file.on('finish', () => file.close(resolve))
-      file.on('error', err => { file.close(); fs.unlink(dest, () => {}); reject(err) })
-    }).on('error', err => { file.close(); fs.unlink(dest, () => {}); reject(err) })
+      const req = proto.request(opts, res => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          if (redirectsLeft <= 0) { reject(new Error('Too many redirects: ' + url)); return }
+          res.resume()
+          doGet(res.headers.location, redirectsLeft - 1)
+          return
+        }
+        if (res.statusCode !== 200) {
+          res.resume()
+          reject(new Error('HTTP ' + res.statusCode + ': ' + url))
+          return
+        }
+        const file = fs.createWriteStream(dest)
+        res.pipe(file)
+        file.on('finish', () => file.close(resolve))
+        file.on('error', err => { file.close(); fs.unlink(dest, () => {}); reject(err) })
+      })
+      req.on('error', err => { fs.unlink(dest, () => {}); reject(err) })
+      req.end()
+    }
+    doGet(fetchUrl, 5)
   })
 }
 
@@ -97,7 +112,7 @@ app.post('/reconstruct', async (req, res) => {
     )
     const imagePaths = results.filter(Boolean)
     if (imagePaths.length === 0)
-      return res.status(400).json({ error: 'all_downloads_failed', detail: 'Check SCRAPERAPI_KEY env var' })
+      return res.status(400).json({ error: 'all_downloads_failed', detail: 'Check SCRAPERAPI_KEY env var or image URLs' })
     console.log('[' + jobId + '] ' + imagePaths.length + ' images ready')
 
     const glbPath = path.join(outputDir, 'model.glb')
