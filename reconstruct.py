@@ -2,6 +2,12 @@
 
 import sys
 import os
+
+# Must be set before any torch/torchmcubes import — Railway has no GPU and
+# torchmcubes (C++ CUDA extension) segfaults on extract_mesh() when it tries
+# to initialize CUDA but finds no device.
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import gc
 import torch
 from PIL import Image
