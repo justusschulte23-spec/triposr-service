@@ -45,6 +45,8 @@ RUN mkdir -p /root/.u2net && \
     wget -q -O /root/.u2net/u2net.onnx \
     https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx
 
+# No GPU on Railway — hide CUDA from torchmcubes to prevent SIGSEGV at extract_mesh()
+ENV CUDA_VISIBLE_DEVICES=""
 ENV PYTHONPATH="/opt/TripoSR"
 
 COPY package.json ./
