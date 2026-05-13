@@ -156,9 +156,10 @@ app.post('/reconstruct', async (req, res) => {
       tsrErr = e.stderr || ''
       const exitInfo = 'exit_code=' + e.code + ' signal=' + e.signal
       console.error('[tsr] FAILED ' + exitInfo)
-      console.error('[tsr] stdout: ' + tsrOut.slice(0, 1000))
-      console.error('[tsr] stderr: ' + tsrErr.slice(0, 1000))
-      throw new Error('TripoSR failed (' + exitInfo + ')\nstdout: ' + tsrOut.slice(0, 500) + '\nstderr: ' + tsrErr.slice(0, 500))
+      // Show full stdout (progress logs) and tail of stderr (Python tracebacks end with the error)
+      console.error('[tsr] stdout:\n' + tsrOut)
+      console.error('[tsr] stderr (tail):\n' + tsrErr.slice(-3000))
+      throw new Error('TripoSR failed (' + exitInfo + ')\nstdout: ' + tsrOut + '\nstderr: ' + tsrErr.slice(-3000))
     }
 
     if (tsrOut) console.log('[tsr] ' + tsrOut.slice(0, 500))
@@ -184,7 +185,7 @@ app.post('/reconstruct', async (req, res) => {
     res.json({ glb_url: glbUrl, renders: [frontUrl, sideUrl].filter(Boolean), job_id: jobId })
 
   } catch (err) {
-    console.error('[' + jobId + '] Error:', err.message.slice(0, 300))
+    console.error('[' + jobId + '] Error:', err.message.slice(0, 500))
     if (!res.headersSent) res.status(500).json({ error: 'reconstruction_failed', detail: err.message })
   } finally {
     try { fs.rmSync(jobDir, { recursive: true, force: true }) } catch {}
