@@ -36,7 +36,7 @@ RUN pip install --no-cache-dir \
     "numpy>=1.24,<2.0" \
     "scipy==1.13.1" \
     scikit-image \
-    onnxruntime
+    "onnxruntime==1.17.0"
 
 RUN pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git
 
@@ -45,8 +45,11 @@ RUN mkdir -p /root/.u2net && \
     wget -q -O /root/.u2net/u2net.onnx \
     https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx
 
-# No GPU on Railway — hide CUDA from torchmcubes to prevent SIGSEGV at extract_mesh()
+# No GPU on Railway — hide CUDA from onnxruntime/torchmcubes to prevent SIGSEGV.
+# OMP/MKL thread caps stop OpenMP spin-lock crashes on shared cloud CPUs.
 ENV CUDA_VISIBLE_DEVICES=""
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
 ENV PYTHONPATH="/opt/TripoSR"
 
 COPY package.json ./
