@@ -2,20 +2,65 @@
 
 import sys
 import os
+import gc
+import subprocess
+import tempfile
 
-# Set before any torch/onnxruntime import.
-# CUDA_VISIBLE_DEVICES="" prevents onnxruntime from enumerating CUDA providers
-# (even CPU-only onnxruntime queries CUDA at init if libs are present → SIGSEGV).
-# OMP_NUM_THREADS=1 prevents OpenMP spin-lock crashes on cloud CPUs.
+# Set before any torch import.
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 
-import gc
 import torch
 from PIL import Image
+import numpy as np
 
-MAX_REMBG_PX = 1024  # cap before rembg — 940×10000 would OOM Railway containers
+MAX_INPUT_PX = 1024
+
+# rembg runs in a child process — if onnxruntime SIGSEGVs there, only the child dies.
+_REMBG_SCRIPT = """\
+import os, sys
+os.environ['CUDA_VISIBLE_DEVICES']=''
+os.environ['OMP_NUM_THREADS']='1'
+from rembg import remove
+from PIL import Image
+img = Image.open(sys.argv[1]).convert('RGBA')
+result = remove(img)
+result.save(sys.argv[2])
+"""
+
+
+def _remove_bg_rembg(input_path):
+    fd, tmp = tempfile.mkstemp(suffix='.png')
+    os.close(fd)
+    try:
+        r = subprocess.run(
+            ['python3', '-c', _REMBG_SCRIPT, input_path, tmp],
+            timeout=120, capture_output=True
+        )
+        if r.returncode == 0 and os.path.getsize(tmp) > 0:
+            img = Image.open(tmp).convert('RGBA').copy()
+            print(f"[TripoSR] rembg OK")
+            return img
+        print(f"[TripoSR] rembg subprocess exit={r.returncode} stderr={r.stderr[:200]}")
+    except subprocess.TimeoutExpired:
+        print("[TripoSR] rembg timed out (120 s)")
+    except Exception as e:
+        print(f"[TripoSR] rembg error: {e}")
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    return None
+
+
+def _remove_bg_pil(image, threshold=240):
+    """Threshold-based white-background removal — fallback for product shots."""
+    arr = np.array(image)
+    bright = arr[:, :, :3].astype(np.float32).mean(axis=2)
+    arr[:, :, 3] = np.where(bright > threshold, 0, 255).astype(np.uint8)
+    return Image.fromarray(arr, 'RGBA')
 
 
 def main():
@@ -29,19 +74,23 @@ def main():
     # Step 1: background removal BEFORE loading TripoSR to reduce peak RAM
     print("[TripoSR] Step 1: background removal...")
     image = Image.open(input_path).convert("RGBA")
-
-    # Resize large images before rembg — limits peak RAM inside onnxruntime
-    w, h = image.size
-    if max(w, h) > MAX_REMBG_PX:
-        print(f"[TripoSR] resizing {w}x{h} → max {MAX_REMBG_PX}px before rembg")
-        image.thumbnail((MAX_REMBG_PX, MAX_REMBG_PX), Image.LANCZOS)
-
     alpha_min, alpha_max = image.split()[3].getextrema()
+
     if alpha_max == 255 and alpha_min == 255:
-        print("[TripoSR] no transparency found — running rembg...")
-        from rembg import remove as rembg_remove
-        image = rembg_remove(image)
+        print("[TripoSR] no transparency — trying rembg subprocess...")
+        result = _remove_bg_rembg(input_path)
+        if result is not None:
+            image = result
+        else:
+            print("[TripoSR] rembg failed — falling back to PIL white-bg removal")
+            image = _remove_bg_pil(image)
         gc.collect()
+
+    # Resize to manageable size for TripoSR
+    w, h = image.size
+    if max(w, h) > MAX_INPUT_PX:
+        print(f"[TripoSR] resizing {w}x{h} → max {MAX_INPUT_PX}px")
+        image.thumbnail((MAX_INPUT_PX, MAX_INPUT_PX), Image.LANCZOS)
 
     # Step 2: load model
     print("[TripoSR] Step 2: loading model...")
