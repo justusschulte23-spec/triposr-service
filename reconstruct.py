@@ -63,6 +63,13 @@ def _remove_bg_pil(image, threshold=240):
     return Image.fromarray(arr, 'RGBA')
 
 
+def _rgba_to_rgb_white(image):
+    """Composite RGBA over white background → RGB (required by TripoSR image tokenizer)."""
+    bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
+    bg.paste(image, mask=image.split()[3])
+    return bg.convert("RGB")
+
+
 def main():
     if len(sys.argv) < 3:
         print("Usage: reconstruct.py <input_image> <output_glb>")
@@ -104,7 +111,7 @@ def main():
             image = _remove_bg_pil(image)
         gc.collect()
 
-    print(f"[TripoSR] image for TripoSR: {image.size} mode={image.mode}")
+    print(f"[TripoSR] image: {image.size} mode={image.mode}")
 
     # Step 2: load model
     print("[TripoSR] Step 2: loading model...")
@@ -124,6 +131,10 @@ def main():
 
     image = resize_foreground(image, 0.85)
     print(f"[TripoSR] after resize_foreground: {image.size}")
+
+    # TripoSR's image_tokenizer normalises with 3-channel mean/std → must be RGB
+    image = _rgba_to_rgb_white(image)
+    print(f"[TripoSR] converted to RGB")
 
     print("[TripoSR] Step 3: inference...")
     with torch.no_grad():
