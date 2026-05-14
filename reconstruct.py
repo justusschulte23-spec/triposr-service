@@ -82,8 +82,6 @@ def main():
     print("[TripoSR] Step 1: background removal...")
     image = Image.open(input_path).convert("RGBA")
 
-    # Resize early — limits memory in rembg subprocess and main process alike.
-    # rembg's u2net runs at 320×320 internally so no quality loss past ~512px.
     w, h = image.size
     if max(w, h) > MAX_INPUT_PX:
         print(f"[TripoSR] resizing {w}x{h} → max {MAX_INPUT_PX}px")
@@ -91,7 +89,6 @@ def main():
 
     alpha_min, alpha_max = image.split()[3].getextrema()
     if alpha_max == 255 and alpha_min == 255:
-        # Save already-resized image to a temp PNG so rembg subprocess gets the small version
         fd, tmp_input = tempfile.mkstemp(suffix='.png')
         os.close(fd)
         try:
@@ -134,7 +131,6 @@ def main():
 
     # TripoSR's image_tokenizer normalises with 3-channel mean/std → must be RGB
     image = _rgba_to_rgb_white(image)
-    print(f"[TripoSR] converted to RGB")
 
     print("[TripoSR] Step 3: inference...")
     with torch.no_grad():
@@ -142,7 +138,7 @@ def main():
 
     # resolution=64 uses ~8x less RAM than 192 on CPU (64^3 vs 192^3 voxels)
     print("[TripoSR] Step 4: mesh extraction (resolution=64)...")
-    meshes = model.extract_mesh(scene_codes, resolution=64)
+    meshes = model.extract_mesh(scene_codes, has_vertex_color=False, resolution=64)
 
     mesh = meshes[0]
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
