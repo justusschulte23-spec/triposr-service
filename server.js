@@ -111,6 +111,46 @@ app.post('/test-download', async (req, res) => {
   }
 })
 
+app.post('/remove-bg', async (req, res) => {
+  const { image_url } = req.body || {}
+  if (!image_url) return res.status(400).json({ error: 'image_url required' })
+
+  const jobId   = Date.now().toString()
+  const inPath  = path.join('/tmp', 'rembg_in_' + jobId)
+  const outPath = path.join('/tmp', 'rembg_out_' + jobId + '.png')
+
+  try {
+    await downloadFile(image_url, inPath)
+
+    const script = `import os,sys
+os.environ['CUDA_VISIBLE_DEVICES']=''
+os.environ['OMP_NUM_THREADS']='1'
+from rembg import remove
+from PIL import Image
+img=Image.open(sys.argv[1]).convert('RGBA')
+out=remove(img)
+out.save(sys.argv[2])
+print(str(out.size[0])+','+str(out.size[1]))
+`
+    const { stdout } = await execFileP(
+      'python3', ['-u', '-c', script, inPath, outPath],
+      { timeout: 120000, maxBuffer: 10 * 1024 * 1024 }
+    )
+
+    const parts = stdout.trim().split(',')
+    const w = parseInt(parts[0], 10)
+    const h = parseInt(parts[1], 10)
+    const cutoutUrl = await uploadToCloudinary(outPath, 'product_cutouts', 'image')
+    res.json({ cutout_url: cutoutUrl, width: w, height: h })
+  } catch (err) {
+    console.error('[remove-bg] Error:', err.message.slice(0, 300))
+    if (!res.headersSent) res.status(500).json({ error: 'remove_bg_failed', detail: err.message })
+  } finally {
+    try { fs.unlinkSync(inPath) } catch {}
+    try { fs.unlinkSync(outPath) } catch {}
+  }
+})
+
 app.post('/reconstruct', async (req, res) => {
   res.setTimeout(900000)
   const { image_urls } = req.body || {}
@@ -144,7 +184,6 @@ app.post('/reconstruct', async (req, res) => {
 
     let tsrOut = '', tsrErr = ''
     try {
-      // -u = unbuffered stdout/stderr so output isn't lost on OOM kill
       const result = await execFileP(
         'python3', ['-u', 'reconstruct.py', imagePaths[0], glbPath],
         { timeout: 600000, maxBuffer: 50 * 1024 * 1024 }
@@ -156,7 +195,6 @@ app.post('/reconstruct', async (req, res) => {
       tsrErr = e.stderr || ''
       const exitInfo = 'exit_code=' + e.code + ' signal=' + e.signal
       console.error('[tsr] FAILED ' + exitInfo)
-      // Show full stdout (progress logs) and tail of stderr (Python tracebacks end with the error)
       console.error('[tsr] stdout:\n' + tsrOut)
       console.error('[tsr] stderr (tail):\n' + tsrErr.slice(-3000))
       throw new Error('TripoSR failed (' + exitInfo + ')\nstdout: ' + tsrOut + '\nstderr: ' + tsrErr.slice(-3000))
